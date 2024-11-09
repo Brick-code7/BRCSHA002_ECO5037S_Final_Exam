@@ -1,77 +1,44 @@
-import argparse
 import json
-import random
 import time
-from base64 import b64decode
+import random
 from algosdk import account, mnemonic, transaction
 from algosdk.v2client import algod
 
-# Algorand client initialization
-ALGOD_ADDRESS = "https://testnet-api.algonode.cloud"
-ALGOD_TOKEN = ""
-algod_client = algod.AlgodClient(ALGOD_TOKEN, ALGOD_ADDRESS)
+# Algod Client Configuration
+algod_address = "https://testnet-api.algonode.cloud"
+algod_token = ""  # No token needed for public nodes like Algonode
+algod_client = algod.AlgodClient(algod_token, algod_address)
 
-def create_account():
-    """Create a new Algorand account."""
-    private_key, address = account.generate_account()
-    mnemonic_phrase = mnemonic.from_private_key(private_key)
-    return private_key, address, mnemonic_phrase
-
-def load_participants(file_path):
-    """Load participant data from a JSON file."""
+# Load participants from a JSON file (or configure directly)
+def load_participants(file_path='stokvel_participants.json'):
     with open(file_path, 'r') as file:
         return json.load(file)
 
-def send_transaction(mnemonic_phrase, receiver_address, amount, note=""):
-    """Send ALGOs using a provided mnemonic."""
-    private_key = mnemonic.to_private_key(mnemonic_phrase)
-    sender_address = account.address_from_private_key(private_key)
-    print(f"Sender Address: {sender_address}")
+participants = load_participants()
 
-    params = algod_client.suggested_params()
+print("Stokvel Participants:")
+for i, participant in enumerate(participants, start=1):
+    print(f"Participant {i}:")
+    print(f"  Address: {participant['address']}")
+    print(f"  Mnemonic: {participant['mnemonic']}")
 
-    unsigned_txn = transaction.PaymentTxn(
-        sender=sender_address,
-        sp=params,
-        receiver=receiver_address,
-        amt=amount,
-        note=note.encode('utf-8'),
-    )
+# Create a multisig account with a 4-of-5 threshold
+msig = transaction.Multisig(1, 4, [p['address'] for p in participants])
+msig_address = msig.address()
+print(f"\nStokvel Multisig Address: {msig_address}")
 
-    signed_txn = unsigned_txn.sign(private_key)
-
-    txid = algod_client.send_transaction(signed_txn)
-    print(f"Transaction submitted with txID: {txid}")
-
-    try:
-        confirmed_txn = transaction.wait_for_confirmation(algod_client, txid, 4)
-        print(f"Transaction confirmed in round {confirmed_txn['confirmed-round']}")
-        print(f"Transaction information: {json.dumps(confirmed_txn, indent=4)}")
-        if 'note' in confirmed_txn['txn']['txn']:
-            print(f"Decoded note: {b64decode(confirmed_txn['txn']['txn']['note']).decode('utf-8')}")
-    except Exception as e:
-        print(f"Error during transaction confirmation: {e}")
-
-def perform_monthly_cycle(participants):
-    """Perform a monthly stokvel cycle."""
-    amount = 500_000
-    print("\nStokvel Participants:")
-    for i, participant in enumerate(participants, start=1):
-        print(f"Participant {i}:")
-        print(f"  Address: {participant['address']}")
-        print(f"  Mnemonic: {participant['mnemonic']}")
-
-    msig = transaction.Multisig(1, 4, [p['address'] for p in participants])
-    msig_address = msig.address()
-    print(f"\nStokvel Multisig Address: {msig_address}")
+# Function to perform monthly cycle
+def perform_monthly_cycle():
+    amount = 100_000  # 0.5 Algos in microAlgos
 
     for participant in participants:
         addr = participant['address']
         mnem = participant['mnemonic']
         print(f"\n{addr} is sending {amount / 1_000_000} Algos to the multisig account.")
         send_transaction(mnem, msig_address, amount, note="Stokvel Contribution")
-        time.sleep(5)
+        time.sleep(5)  # Wait for transaction confirmation
 
+    # Select a random recipient who hasn't been paid yet
     unpaid_participants = [p for p in participants if not p.get('paid', False)]
     if not unpaid_participants:
         print("All participants have been paid. Resetting payment records.")
@@ -83,7 +50,8 @@ def perform_monthly_cycle(participants):
     recipient_address = recipient['address']
     print(f"\nSelected recipient for this month: {recipient_address}")
 
-    payout_amount = 2_000_000
+    # Prepare the payout transaction
+    payout_amount = 300_000  # 2 Algos in microAlgos
     params = algod_client.suggested_params()
     payout_txn = transaction.PaymentTxn(
         sender=msig_address,
@@ -92,40 +60,55 @@ def perform_monthly_cycle(participants):
         amt=payout_amount,
         note="Stokvel Payout".encode('utf-8'),
     )
-
+    msig_payment_txn = transaction.MultisigTransaction(payout_txn, msig)
     signed_txns = []
     for participant in participants:
         private_key = mnemonic.to_private_key(participant['mnemonic'])
-        signed_txn = payout_txn.sign(private_key)
-        signed_txns.append(signed_txn)
-        print(f"Signature collected from {participant['address']}.")
+        msig_payment_txn.sign(private_key)
 
-        if len(signed_txns) >= 4:
-            break
+        #if len(signed_txns) >= 4:
+            #break
 
-    if len(signed_txns) < 4:
-        print("Not enough signatures collected for the payout transaction.")
-    else:
-        try:
-            txid = algod_client.send_transactions(signed_txns)
-            print(f"Payout transaction submitted with txID: {txid}")
-            confirmed_txn = transaction.wait_for_confirmation(algod_client, txid, 4)
-            print(f"Payout transaction confirmed in round {confirmed_txn['confirmed-round']}")
-        except Exception as e:
-            print(f"Error submitting payout transaction: {e}")
+    # Submit the multisig transaction
+    try:
+        #signed_txn = signed_txns.finalize()
+        txid = algod_client.send_transaction(msig_payment_txn)
+        print(f"Payout transaction submitted with txID: {txid}")
+        confirmed_txn = transaction.wait_for_confirmation(algod_client, txid, 4)
+        print(f"Payout transaction confirmed in round {confirmed_txn['confirmed-round']}")
+    except Exception as e:
+        print(f"Error submitting payout transaction: {e}")
 
-def main():
-    parser = argparse.ArgumentParser(description="Algorand CLI Tool")
-    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+def send_transaction(mnemonic_phrase, receiver_address, amount, note=""):
+    # Convert mnemonic to private key
+    private_key = mnemonic.to_private_key(mnemonic_phrase)
+    sender_address = account.address_from_private_key(private_key)
 
-    stokvel_parser = subparsers.add_parser("stokvel", help="Run a monthly stokvel cycle")
-    stokvel_parser.set_defaults(func=lambda args: perform_monthly_cycle(load_participants('stokvel_participants.json')))
+    # Fetch suggested network parameters
+    params = algod_client.suggested_params()
 
-    args = parser.parse_args()
-    if hasattr(args, 'func'):
-        args.func(args)
-    else:
-        parser.print_help()
+    # Create a payment transaction
+    unsigned_txn = transaction.PaymentTxn(
+        sender=sender_address,
+        sp=params,
+        receiver=receiver_address,
+        amt=amount,
+        note=note.encode('utf-8'),
+    )
+
+    # Sign the transaction
+    signed_txn = unsigned_txn.sign(private_key)
+
+    # Submit the transaction
+    txid = algod_client.send_transaction(signed_txn)
+    print(f"Transaction submitted with txID: {txid}")
+
+    # Wait for confirmation
+    try:
+        confirmed_txn = transaction.wait_for_confirmation(algod_client, txid, 4)
+        print(f"Transaction confirmed in round {confirmed_txn['confirmed-round']}")
+    except Exception as e:
+        print(f"Error during transaction confirmation: {e}")
 
 if __name__ == "__main__":
-    main()
+    perform_monthly_cycle()
