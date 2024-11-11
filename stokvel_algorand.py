@@ -10,8 +10,6 @@ algod_address = "https://testnet-api.algonode.cloud"
 algod_token = ""  # No token needed for public nodes like Algonode
 algod_client = algod.AlgodClient(algod_token, algod_address)
 
-# Load participants from a JSON file
-
 
 participants = [
     {
